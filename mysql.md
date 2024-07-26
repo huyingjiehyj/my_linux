@@ -691,3 +691,174 @@ mysql> set password for root@'localhost'='ubuntu';
 [root@localhost ~]# mysql -uroot -pubuntu
 ```
 
+
+
+##### 18、权限
+
+
+
+```sql
+#给wordpresser库所有权限
+GRANT ALL ON wordpress.* TO wordpress@'10.0.0.%';
+#授予所有权限
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'10.0.0.%' WITH GRANT OPTION;
+#取消权限
+REVOKE DELETE ON *.* FROM 'testuser'@'172.16.0.%'
+REVOKE ALL ON *.* FROM 'testuser'@'172.16.0.%';
+#查看指定用户权限
+SHOW GRANTS FOR 'user'@'host';
+#查看当前使用中的用户的权限
+SHOW GRANTS FOR CURRENT_USER[()];
+```
+
+```sql
+#创建用户
+(root@localhost) [(none)]>create user 'root'@'10.0.0.%' identified by '123456';
+Query OK, 0 rows affected (1.89 sec)
+#查看用户列表
+(root@localhost) [(none)]>select user,host from mysql.user;
++------------------+-----------+
+| user             | host      |
++------------------+-----------+
+| root             | 10.0.0.%  |
+| wordpresser      | 10.0.0.%  |
+| mysql.infoschema | localhost |
+| mysql.session    | localhost |
+| mysql.sys        | localhost |
+| root             | localhost |
++------------------+-----------+
+6 rows in set (0.00 sec)
+#查看用户权限，新用户只有usage权限，只能连接
+(root@localhost) [(none)]>show grants for 'root'@'10.0.0.%';
++-----------------------------------------+
+| Grants for root@10.0.0.%                |
++-----------------------------------------+
+| GRANT USAGE ON *.* TO `root`@`10.0.0.%` |
++-----------------------------------------+
+1 row in set (0.00 sec)
+#远程连接
+mysql -uroot -p123456 -h10.0.0.164
+#授权只能查看 student数据库的class表
+(root@localhost) [(none)]>grant select on student.class to root@'10.0.0.%';
+Query OK, 0 rows affected (0.30 sec)
+
+(root@localhost) [(none)]>show grants for 'root'@'10.0.0.%';
++--------------------------------------------------------+
+| Grants for root@10.0.0.%                               |
++--------------------------------------------------------+
+| GRANT USAGE ON *.* TO `root`@`10.0.0.%`                |
+| GRANT SELECT ON `student`.`class` TO `root`@`10.0.0.%` |
++--------------------------------------------------------+
+2 rows in set (0.00 sec)
+```
+
+##### 19、MySQL架构和性能优化
+
+```
+#查看最大并发连接数
+(root@localhost) [(none)]>show variables like 'max_connections';
++-----------------+-------+
+| Variable_name   | Value |
++-----------------+-------+
+| max_connections | 151   |
++-----------------+-------+
+1 row in set (0.00 sec)
+```
+
+- 存储引擎
+
+-  mysql5.5之后用InooDB 
+
+   mysql5.5之前用MylSAM：读写相互阻塞 不能同时进行
+
+- 锁：计算机协调多进程或线程并发访问某一资源时的机制
+
+  页锁
+
+  表锁：对整张表加锁 ，MylSAM   开销小，加锁块，不会出现死锁
+
+  行锁：只对当前的操作行加锁   IonoDB 冲突概率低，开销大，加锁慢，会出现死锁
+
+```
+#查看引擎
+(root@localhost) [student]>show table status like 'user'\G;
+*************************** 1. row ***************************
+           Name: user
+         Engine: InnoDB
+        Version: 10
+     Row_format: Dynamic
+           Rows: 2
+ Avg_row_length: 8192
+    Data_length: 16384
+Max_data_length: 0
+   Index_length: 0
+      Data_free: 0
+ Auto_increment: 3
+    Create_time: 2024-07-25 17:22:01
+    Update_time: 2024-07-25 17:24:46
+     Check_time: NULL
+      Collation: utf8mb4_0900_ai_ci
+       Checksum: NULL
+ Create_options: 
+        Comment: 
+1 row in set (0.01 sec)
+#查看表文件
+[root@10 ~]$ ll /var/lib/mysql
+```
+
+- MVCC : 多版本并发控制，可以看做行级锁的一个变种
+
+```sql
+#查看 mysql 支持的存储引擎
+show engines;
+#查看默认的存储引擎
+show variables like '%storage_engine%';
+#在文件中设置存储引擎
+vim /etc/my.cnf
+[mysqld]
+default_storage_engine=InnoDB
+#查看student库中所有表使用的存储引擎
+show table status from student \G;
+#查看特定表默认存储引擎
+show create table class \G;
+show table status like 'class'\G;
+#设置表的存储引擎
+CREATE TABLE class(... ) ENGINE=InnoDB;
+ALTER TABLE class ENGINE=InnoDB;
+```
+
+- ##### 服务器选项
+
+- 查看服务器选项`mysqld --verbose --help`
+
+- 主配置文件
+
+```bash
+#在文件查看服务器选项
+[root@localhost ~]# cat /etc/my.cnf.d/mysql-server.cnf 
+...... ...... 
+[mysqld]
+datadir=/var/lib/mysql
+socket=/var/lib/mysql/mysql.sock
+log-error=/var/log/mysql/mysqld.log
+pid-file=/run/mysqld/mysqld.pid
+#加服务器选项报错查看错误信息
+tail /var/log/mysql/mysqld.log
+```
+
+- ##### 服务器系统变量
+
+- ```sql
+  #查看所有变量/所有全局变量/session变量
+  (root@localhost) [(none)]>show variables;
+  (root@localhost) [(none)]>show global variables;
+  (root@localhost) [(none)]>show session variables;#修改会话变量：仅对当前会话有影响
+  #查看具体变量
+  (root@localhost) [(none)]>show variables like '变量名';
+  (root@localhost) [(none)]>select @@变量名;
+  #变量无法实现永久保存，重启服务后会被重置
+  
+  ```
+
+##### 20、index索引
+
