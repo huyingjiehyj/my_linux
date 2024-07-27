@@ -862,3 +862,371 @@ tail /var/log/mysql/mysqld.log
 
 ##### 20、index索引
 
+- 数据结构：快速查找 
+
+- 索引通过存储引擎实现
+
+- 优点
+
+​		大大加快数据的检索速度;
+
+​		创建唯一性索引，保证数据库表中每一行数据的唯一性;
+
+​		加速表和表之间的连接;
+
+​		在使用分组和排序子句进行数据检索时，可以显著减少查询中分组和排序的时间。
+
+- 缺点
+
+​		索引需要占物理空间。 
+
+​		当对表中的数据进行增加、删除和修改的时候，索引也要动态的维护，降低了数据的维护速度。
+
+-  树：n个节点，n-1条边，没有环路
+
+   节点的度：子节点的个数
+
+   树的度：最大节点的度就是树的度
+
+  深度：根节点到节点唯一路径长
+
+  高度：节点到树叶最长路径长
+
+- 二叉查找树：首先它是一颗二叉树，若左子树不空，则左子树上所有结点的值均小于它的根结点的 值，若右子树不空，则右子树上所有结点的值均大于它的根结点的值，左、右子树也分别为二叉排 序树
+
+  **红黑树特点** 
+
+  - 根节点是黑色的，叶节点是不存储数据的黑色空节点
+  -  任何相邻的两个节点不能同时为红色，红色节点被黑色节点隔开，红色节点的子节点是黑色的 
+  - 任意节点到其可到达的叶节点间包含相同数量的黑色节点，保证任何路径相差不会超出2倍，从而 实现基本平衡
+
+-   **B-树：读做B树**
+
+     B树中是将数据和索引放在一起的，以减少IO次数， 加快查询速度，一个节点能放多少数据，通常取决于一条数据占用的空间大小。
+
+![image-20240727093150330](C:\Users\26914\AppData\Roaming\Typora\typora-user-images\image-20240727093150330.png)
+
+- **B+树**
+
+![image-20240727093236983](C:\Users\26914\AppData\Roaming\Typora\typora-user-images\image-20240727093236983.png)
+
+- **B+树和B-树的主要区别**：
+
+B-树内部节点是保存数据的，而B+树内部节点是不保存数据的，只作索引作用，它的叶子节点才保 存数据。
+
+B+树相邻的叶子节点之间是通过链表指针连起来的，B-树却不是。 查找过程中，B-树在找到具体的数值以后就结束，而B+树则需要通过索引找到叶子结点中的数据才 结束
+
+B-树中任何一个关键字出现且只出现在一个结点中，而B+树可以出现多次。
+
+- InnoDB 引擎中一颗的 B+ 树可以存放多少行数据？
+
+总记录数=根节点指针数*单个叶子记录的行数
+
+```sql
+#查看student数据库，class表的索引
+(root@localhost) [(none)]>show index from student.class;
+#查看语句是否利用索引
+(root@localhost) [student]>explain select * from class where id=4 \G;
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: class
+   partitions: NULL
+         type: const            #只读取一次，ALL全表扫描
+possible_keys: PRIMARY
+          key: PRIMARY          #使用了主键索引
+      key_len: 4
+          ref: const
+         rows: 1                #扫描了一条数据
+     filtered: 100.00
+        Extra: NULL
+1 row in set, 1 warning (0.00 sec)
+#创建索引
+(root@localhost) [student]>create index idx_name on class(name);
+#create index idx_name on student(name(10)); 表示取 name 字段中的前 10 个字符做索引
+#查询姓名，从原来扫描六条数据降到扫描1条数据
+root@localhost) [student]>explain select * from class where name='翠花'\G;
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: class
+   partitions: NULL
+         type: ref
+possible_keys: idx_name         #使用了索引
+          key: idx_name         #使用了索引
+      key_len: 82
+          ref: const
+         rows: 1                #扫描1条数据，比全表扫描扫描的数据少
+     filtered: 100.00
+        Extra: NULL
+1 row in set, 1 warning (0.01 sec)
+#B+树索引是左前缀特性，可以使用like查询左匹配'%x'，右匹配不能索引 'x%'
+ explain select * from student where name like 'g%'\G;
+#mariadb中查询索引次数
+select count(*) from class where name like 'm%';
+#删除索引
+(root@localhost) [student]>drop index idx_name on class;
+```
+
+- profile工具
+
+```sql
+#查看profiling
+(root@localhost) [student]>select @@profiling; 
+#开启
+(root@localhost) [student]>set profiling=1;
+#运行一条命令
+(root@localhost) [student]>select * from class;
+.......
+#查看
+(root@localhost) [student]>show profiles;
++----------+------------+---------------------+
+| Query_ID | Duration   | Query               |
++----------+------------+---------------------+
+|        1 | 0.00084250 | select * from class |
++----------+------------+---------------------+
+#duration 用时
+#导入数据库
+mysql 数据库名 < testlog.sql
+#执行存储过程
+mysql> call sp_testlog;
+
+```
+
+##### 21、锁
+
+隐式锁； 由存储引擎自动施加锁 
+
+显式锁； 用户手动请求
+
+```sql
+#给class表加读锁 不影响查询，无法写
+(root@localhost) [student]>lock tables class read;
+#释放锁
+(root@localhost) [student]>unlock tables;
+#连接或进程只能释放其自身施加的锁
+#全局锁
+#加读锁，可读不可写#不能创建账号，数据库，创建账号本质也是写表
+ flush tables with read lock;
+
+```
+
+##### 22、事务
+
+- 事务在InooDB下，mylsam不支持事务
+
+- 显式启动事务`begin    begin work     start   transaction`
+
+- 提交执行 commiit           回滚  rollback
+
+  
+
+```sql
+#查看数据库的表
+(root@localhost) [student]>select * from class where id=5;
++----+--------+------+--------+--------+
+| id | name   | age  | gender | is_del |
++----+--------+------+--------+--------+
+|  5 | 小张   |   21 | M      |      0 |
++----+--------+------+--------+--------+
+1 row in set (0.00 sec)
+#开始事务begin
+(root@localhost) [student]>begin;
+Query OK, 0 rows affected (0.00 sec)
+#将id=5的学生年龄改为30
+(root@localhost) [student]>update class set age='30' where id='5';
+Query OK, 1 row affected (0.00 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+#在本设备上查看class数据发生改变，但在另一设备访问本数据库，数据不变age=20
+(root@localhost) [student]>select * from class where id='5';
++----+--------+------+--------+--------+
+| id | name   | age  | gender | is_del |
++----+--------+------+--------+--------+
+|  5 | 小张   |   30 | M      |      0 |
++----+--------+------+--------+--------+
+1 row in set (0.00 sec)
+#提交事务commit
+(root@localhost) [student]>commit;
+Query OK, 0 rows affected (0.01 sec)
+#提交完之后，在其他设备发现class表中 age=30
+```
+
+回滚操作
+
+```sql
+#事务开始
+root@localhost) [student]>begin;
+Query OK, 0 rows affected (0.00 sec)
+#删除表
+(root@localhost) [student]>delete from class;
+Query OK, 7 rows affected (0.15 sec)
+#查询class表，如果在另一台设备查看数据库，class表有数据
+(root@localhost) [student]>select * from class;
+Empty set (0.00 sec)
+#回滚
+(root@localhost) [student]>rollback;
+Query OK, 0 rows affected (0.11 sec)
+#查看class表，回滚
+(root@localhost) [student]>select * from class;
++----+--------+------+--------+--------+
+| id | name   | age  | gender | is_del |
++----+--------+------+--------+--------+
+|  1 | 小明   |   16 | M      |      0 |
+|  2 | 小红   |   17 | F      |      0 |
+|  3 | 小刚   |   18 | M      |      0 |
+|  4 | 翠花   |   20 | F      |      0 |
+|  5 | 小张   |   30 | M      |      0 |
+|  6 | 小吕   |   20 | F      |      0 |
+|  7 | 铁柱   |   23 | M      |      0 |
++----+--------+------+--------+--------+
+7 rows in set (0.00 sec)
+#truncate table class; 清空表， truncate 属于 DDL 语句，不支持事务操作，回滚数据并未回来
+#drop 也不是DML语句，所以也无法回滚
+#如果输入多条指令可以在中间加入事务保存点 mysql > savepoint p1   mysql > savepoint p2  ......
+#需要回滚时，只需要回滚到对应保存点 mysql> rollback to p2  
+
+
+
+
+#查看自动提交
+(root@localhost) [student]>select @@autocommit;
++--------------+
+| @@autocommit |
++--------------+
+|            1 |
++--------------+
+1 row in set (0.99 sec)
+#atuocommit 是会话级别的变量，同时也是一个服务器选项，需要此选项永久生效，可以写配置文件
+[root@10 /etc/my.cnf.d]$ vim mysql-server.cnf 
+[mysqld]
+datadir=/var/lib/mysql
+socket=/var/lib/mysql/mysql.sock
+log-error=/var/log/mysql/mysqld.log
+pid-file=/run/mysqld/mysqld.pid
+autocommit=0
+#重启后生效
+
+```
+
+- 查看正在进行的事务`SELECT * FROM INFORMATION_SCHEMA.INNODB_TRX;`
+
+- 死锁：指两个或两个以上的进程在执行过程中，因争夺资源而造成的一种互相等待的现象， MySQL 中出现死锁时，MySQL 服务会自行处理，自行回滚一个事务，防止死锁的出现。
+
+- \#MySQL8.0.13 及以后使用此语句查看锁`SELECT * FROM performance_schema.data_locks;`
+
+  发生死锁时，需要kill +进程id  杀掉未完成的进程id
+
+- MySQL 中默认的隔离级 别是可重复读。
+
+![image-20240727164215339](C:\Users\26914\AppData\Roaming\Typora\typora-user-images\image-20240727164215339.png)
+
+mysql8.0
+
+查看隔离级别：`select @@transaction_isolation;`
+
+指定事务隔离级别`SET transaction_isolation='READ-UNCOMMITTED|READCOMMITTED|REPEATABLEREAD|SERIALIZABLE`
+
+\#隔离级修改为 读未提交
+
+`[root@rocky86 ~]# vim /etc/my.cnf.d/mysql-server.cnf` 
+
+`[mysqld]`
+
+`transaction-isolation=READ-UNCOMMITTED`
+
+##### 23、日志
+
+![image-20240727173129406](C:\Users\26914\AppData\Roaming\Typora\typora-user-images\image-20240727173129406.png)
+
+```sql
+#MySQL 通过 innodb_flush_log_at_trx_commit 配置来控制 redo log 的落盘规则。
+#值为0：延迟写，先写到log buffer 每隔1s批量写os buffer和log file
+#1：实时写 每次提交事务后都会将数据写入 OS Buffer 再写磁盘文件，这种方式几乎不会丢失数据，性能较差
+#2： 实时写，延迟落盘 实时写入os buffer 写磁盘1s一次
+(root@localhost) [(none)]>show variables like '%innodb_flush_log_at_trx%';
++--------------------------------+-------+
+| Variable_name                  | Value |
++--------------------------------+-------+
+| innodb_flush_log_at_trx_commit | 1     |
++--------------------------------+-------+
+1 row in set (0.00 sec)
+#将值改为0
+root@localhost) [student]>set global innodb_flush_log_at_trx_commit=0;
+Query OK, 0 rows affected (0.00 sec)
+
+
+
+#错误日志
+#查看错误日志位置
+(root@localhost) [student]>select @@log_error;
++---------------------------+
+| @@log_error               |
++---------------------------+
+| /var/log/mysql/mysqld.log |
++---------------------------+
+1 row in set (0.00 sec)
+#可在配置文件中修改路径
+[root@10 ~]$ cat /etc/my.cnf.d/mysql-server.cnf 
+[mysqld]
+log-error=/var/log/mysql/mysqld.log
+#错误日志记录基本 1：error   2：error warning 3：error warning information
+mysql> select @@log_error_verbosity;
+-----------------------+
+| @@log_error_verbosity |
++-----------------------+
+|                     2 |
++-----------------------+
+
+```
+
+**通用日志**
+
+```sql
+#相关配置项
+#general_log=0|1 是否开启通用日志
+#general_log_file=/path/log_file 日志文件
+#log_output=FILE|TABLE|NONE 记录到文件中还是记录到表中
+#查看默认配置
+mysql> select @@general_log,@@general_log_file,@@log_output;
+
+#开启日志
+mysql> set global general_log=1;
+Query OK, 0 rows affected (0.00 sec)
+#修改参数，将日志记录到表中
+mysql> select * from mysql.general_log;
+Empty set (0.00 sec)
+#修改配置
+mysql> set global log_output="TABLE";
+Query OK, 0 rows affected (0.00 sec)
+mysql> select @@log_output;
++--------------+
+| @@log_output |
++--------------+
+| TABLE        |
++--------------+
+1 row in set (0.00 sec)
+
+```
+
+**慢查询日志**
+
+```sql
+#相关配置项
+#slow_query_log=0|1 是否开启记录慢查询日志
+#log_slow_queries=0|1 同上，MariaDB 10.0/MySQL 5.6.1 版本后已删除
+#slow_query_log_file=/path/log_file 日志文件路径
+#long_query_time=N 对慢查询的定义，默认10S，也就是说一条SQL查询语
+句，执行时长超过10S，将会被记录
+#log_queries_not_using_indexes=0|1 只要查询语句中没有用到索引，或是全表扫描，都会记
+录，不管查询时长是否达到阀值
+#查看默认配置
+mysql> select @@slow_query_log,@@slow_query_log_file,@@long_query_time;
+开启慢查询日志
+
+mysql> set global slow_query_log=1;
+Query OK, 0 rows affected (0.00 sec)
+mysql> set long_query_time=1;
+Query OK, 0 rows affected (0.00 sec)
+
+```
+
