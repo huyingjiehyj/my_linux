@@ -1219,14 +1219,287 @@ mysql> select @@log_output;
 句，执行时长超过10S，将会被记录
 #log_queries_not_using_indexes=0|1 只要查询语句中没有用到索引，或是全表扫描，都会记
 录，不管查询时长是否达到阀值
-#查看默认配置
+#查看默认配置，默认慢查询没开
 mysql> select @@slow_query_log,@@slow_query_log_file,@@long_query_time;
-开启慢查询日志
-
+#开启慢查询日志，日志存储在slow_query_log_file下
 mysql> set global slow_query_log=1;
 Query OK, 0 rows affected (0.00 sec)
 mysql> set long_query_time=1;
 Query OK, 0 rows affected (0.00 sec)
+#mysqldumpslow 查询慢排序文件
+[root@10 ~]$ mysqldumpslow /var/lib/mysql/10-slow.log 
+
+```
+
+**二进制日志**
+
+- 三种格式：
+
+  statement：记录原生执行SQL语句，写什么记什么
+
+  row：将sql语句变量函数替换后记录
+
+  mixed：混合
+
+```sql
+#查询二进制日志信息
+(root@localhost) [student]>select @@log_bin,@@sql_log_bin,@@log_bin_basename,@@log_bin_index,@@binlog_format,@@max_binlog_size\G
+*************************** 1. row ***************************
+         @@log_bin: 1        #是否开启二进制日志
+     @@sql_log_bin: 1         #是否开启二进制日志
+@@log_bin_basename: /var/lib/mysql/binlog            #binlog文件前缀
+   @@log_bin_index: /var/lib/mysql/binlog.index      #索引文件路径
+   @@binlog_format: ROW                              #row格式记录
+ @@max_binlog_size: 1073741824                       #单文件大小
+1 row in set, 1 warning (0.00 sec)
+#MySQL中默认开启，查看相关文件，不是文本文件，无法查看
+[root@rocky86 ~]# ll -h /var/lib/mysql/binlog.*
+
+#查看正在使用的二进制日志
+(root@localhost) [(none)]>show master logs;  #show master status 查看正在使用的二进制文件
++---------------+-----------+-----------+
+| Log_name      | File_size | Encrypted |
++---------------+-----------+-----------+
+| 10-bin.000001 |       469 | No        |
++---------------+-----------+-----------+
+1 row in set (0.00 sec)
+
+(root@localhost) [(none)]>show binary logs;
++---------------+-----------+-----------+
+| Log_name      | File_size | Encrypted |
++---------------+-----------+-----------+
+| 10-bin.000001 |       469 | No        |
++---------------+-----------+-----------+
+1 row in set (0.00 sec)
+#查看二进制日志中的事件
+(root@localhost) [(none)]>show binlog events
+#重启或命令刷新会自动生成新的二进制文件
+#[root@rocky86 ~]# mysqladmin flush-logs/[root@rocky86 ~]#systemctl restart mysql.service/mysql> flush logs;
+
+(root@localhost) [(none)]>show binary logs;
++---------------+-----------+-----------+
+| Log_name      | File_size | Encrypted |
++---------------+-----------+-----------+
+| 10-bin.000001 |       469 | No        |
++---------------+-----------+-----------+
+1 row in set (0.00 sec)
+
+(root@localhost) [(none)]>flush logs;#刷新
+Query OK, 0 rows affected (0.01 sec)
+(root@localhost) [(none)]>show binary logs;
++---------------+-----------+-----------+
+| Log_name      | File_size | Encrypted |
++---------------+-----------+-----------+
+| 10-bin.000001 |       513 | No        |
+| 10-bin.000002 |       157 | No        |
++---------------+-----------+-----------+
+2 rows in set (0.00 sec)
+#删除10-bin.000002之前的日志
+mysql> PURGE BINARY LOGS TO 'binlog.000002';
+#删除 2024年7月28号之前的日志
+mysql> PURGE BINARY LOGS BEFORE '2023-01-01 21:00:00
+#设置从01开始
+mysql> reset master;
+
+```
+
+##### 24、备份恢复
+
+1. mysqldump 备份和还原实现 -A备份所有，-B备份结构
+
+   
+
+```sql
+#备份数据库student(此种备份方式并不会备份数据库结构，只备份表和数据)
+#创建存放sql文件的文件夹
+[root@10 ~]$ mkdir data/
+#将想要备份的数据库student备份为student-bak.sql文件
+[root@10 ~]$ mysqldump -uroot -p123456 student > /root/data/student-bak.sql
+#测试，删除数据库的表
+mysql> show tables;
++-------------------+
+| Tables_in_student |
++-------------------+
+| class             |
+| teacher           |
+| user              |
+| v_stu             |
++-------------------+
+4 rows in set (0.00 sec)
+
+mysql> drop table class;
+Query OK, 0 rows affected (0.01 sec)
+
+mysql> drop table teacher;
+Query OK, 0 rows affected (0.01 sec)
+
+mysql> show tables;
++-------------------+
+| Tables_in_student |
++-------------------+
+| user              |
+| v_stu             |
++-------------------+
+2 rows in set (0.01 sec)
+#备份还原 （也可重新创建数据库和源数据库不同名，数据还原到新数据库）
+[root@10 ~]$ mysql -uroot -p123456 student < /root/data/student-bak.sql
+#登录查看
+mysql> show tables;
++-------------------+
+| Tables_in_student |
++-------------------+
+| class             |
+| teacher           |
+| user              |
+| v_stu             |
++-------------------+
+4 rows in set (0.00 sec)
+```
+
+```sql
+#备份数据库student结构和数据
+#将student数据库备份（备份文件中含有创建数据库语句，比单纯备份数据的文件大）
+[root@10 ~]$ mysqldump -uroot -p123456 -B student > /root/data/student2-bak.sql
+#测试，删除student数据库
+mysql> drop database student;
+Query OK, 1 row affected (0.01 sec)
+
+mysql> show databases;
++--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| mysql              |
+| performance_schema |
+| student2           |
+| sys                |
++--------------------+
+#还原数据库
+[root@10 ~]$ mysql -uroot -p123456 < /root/data/student2-bak.sql 
+#查看
+mysql> show databases;
++--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| mysql              |
+| performance_schema |
+| student            |
+| student2           |
+| sys                |
++--------------------+
+6 rows in set (0.00 sec)
+```
+
+2、备份所有数据库
+
+```sql
+#备份所有数据库
+[root@10 ~]$ mysqldump -uroot -p123456 -A > /root/data/all-bak.sql
+#备份数据库，生成压缩文件
+mysqldump -uroot -p123456 -A | gzip >/root/data/all-bak.sql.gz
+#查看备份了哪些数据库
+[root@10 ~]$ cat /root/data/all-bak.sql | grep -i '^create database'
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `mysql` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `student` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `student2` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
+#information_schema，performance_schema，sys 这三个数据库没有备份
+
+##如果我们使用了全部备份，而又只需要恢复一个数据库或一个表时，则应该先将备份数据还原到一个中间数据库，再从该库备份出想要的数据，然后再进行还原操作。
+
+```
+
+3、数据库备份脚本
+
+```bash
+[root@rocky86 0104]# vim backup.sh
+
+UNAME=root
+PWD=12345
+HOST=10.0.0.158
+IGNORE='Database|information_schema|performance_schema|sys'
+YMD=`date +%F`
+if [ ! -d /backup/${YMD} ];then
+ mkdir -pv /backup/${YMD}
+fi
+DBLIST=`mysql -u${UNAME} -p${PWD} -h${HOST} -e "show databases;" 2>/dev/null | 
+grep -Ewv "$IGNORE"`
+for db in ${DBLIST};do
+ mysqldump -u${UNAME} -p${PWD} -h${HOST} -B $db 2>/dev/null 
+1>/backup/${YMD}/${db}_${YMD}.sql
+ if [ $? -eq 0 ];then
+ echo "${db}_${YMD} backup success"
+ else
+ echo "${db}_${YMD} backup fail"
+ fi
+done
+#测试
+[root@rocky86 0104]# chmod a+x backup.sh
+
+[root@rocky86 0104]# ls /backup/
+#执行备份
+[root@rocky86 0104]#./backup.sh 
+#还原
+[root@rocky86 0104]# mysql -uuser1 -p123456 < /backup/testdb_2023-01-04.sql
+......
+```
+
+2、xtrabackup 备份和还原实现（先下载xtrabackup 插件）
+
+```sql
+#开始备份
+
+[root@rocky86 ~]# xtrabackup -uuser1 -p123456 --backup --target-dir=/backup/base
+......
+......
+[root@rocky86 ~]# ls /backup/base/
+备份时的相关信息
+[root@rocky86 ~]# cat /backup/base/xtrabackup_info
+#远程主机还原
+#远程主机需要安装相同版本的xtrabackup，相同版本的MySQL
+#整理文件
+[root@rocky86 ~]# xtrabackup --prepare --target-dir=/root/backup/base
+#远程主机mysql服务不能开启，数据目录/var/lib/mysql/不能有数据
+#还原
+[root@rocky86 ~]# xtrabackup --copy-back --target-dir=/root/backup/base --datadir=/var/lib/mysql
+#修改权限
+[root@rocky86 ~]# chown -R mysql.mysql /var/lib/mysql/*
+#启动查看
+```
+
+数据还原时注意，还原顺序一定要正确，先还原完全备份的数据，再还原第一次增量备份的数据，再还 原第二次增量备份的数据，如果有多个增量备份，也是按照此规则进行还原。另外，在还原时，只有最 后一次的备份文件还原时需要进行事务回滚，之前的都不用回滚。
+
+##### 25、集群
+
+- 横向扩展：一般采用新 增节点的方式，增加服务节点的规模来解决性能问题，比如，当一台机器不够用时，可以再增加一台机 器或几台机器来分担流量和业务。
+
+- 纵向扩展：一般采用升级服 务器硬件，增加资源供给，修改服务配置项等方式来解决性能问题，
+
+  **全新一主一从实现**
+
+```sql
+#创建文件夹
+[root@10 ~]$ mkdir -pv /data/mysql/logbin
+mkdir: created directory '/data'
+mkdir: created directory '/data/mysql'
+mkdir: created directory '/data/mysql/logbin'
+#给文件夹加权限
+[root@10 ~]$ chown -R mysql.mysql /data/mysql/
+#修改
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf 
+[mysqld]
+datadir=/var/lib/mysql
+socket=/var/lib/mysql/mysql.sock
+log-error=/var/log/mysql/mysqld.log
+pid-file=/run/mysqld/mysqld.pid
+#指定server-id和存放二进制文件的路径
+server-id=171
+log_bin=/data/mysql/logbin/mysql-bin
+#重启服务
+#重启服务失败时可先输入命令setenforce 0，
+#然后更改文件/etc/selinux/config中将SELINUX的值从enforcing或permissive更改为disabled，然后重启系统。
+#关闭防火墙 
+[root@10 ~]$ systemctl restart mysqld
 
 ```
 
