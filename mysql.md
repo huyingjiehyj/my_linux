@@ -1475,9 +1475,13 @@ done
 
 - 纵向扩展：一般采用升级服 务器硬件，增加资源供给，修改服务配置项等方式来解决性能问题，
 
-  **全新一主一从实现**
+  **全新一主一从实现（修改配置文件容易报错）**
+  
+  ![image-20240731201828254](C:/Users/26914/AppData/Roaming/Typora/typora-user-images/image-20240731201828254.png)
 
 ```sql
+#主节点配置   10.0.0.171
+
 #创建文件夹
 [root@10 ~]$ mkdir -pv /data/mysql/logbin
 mkdir: created directory '/data'
@@ -1495,11 +1499,269 @@ pid-file=/run/mysqld/mysqld.pid
 #指定server-id和存放二进制文件的路径
 server-id=171
 log_bin=/data/mysql/logbin/mysql-bin
-#重启服务
-#重启服务失败时可先输入命令setenforce 0，
-#然后更改文件/etc/selinux/config中将SELINUX的值从enforcing或permissive更改为disabled，然后重启系统。
-#关闭防火墙 
-[root@10 ~]$ systemctl restart mysqld
+default_authentication_plugin=mysql_native_password
 
+#重启服务
+#重启服务失败时可先输入命令setenforce 0
+#关闭防火墙 (关完systemctl status firewall.service确认一下)
+#重连mysql
+#(如果还不行)然后更改文件/etc/selinux/config中将SELINUX的值从enforcing或permissive更改为disabled，然后重启系统。
+[root@10 ~]$ systemctl restart mysqld
+#查看二进制日志
+ ll /data/mysql/logbin/ #或 mysql> show master logs;
+#创建账号，给账号授权（账号权限mysql_native_password）
+#查看账号权限（select user,host,plugin from mysql.user）
+mysql> create user root@'10.0.0.%' identified by '123456';
+Query OK, 0 rows affected (0.11 sec)
+mysql> grant replication slave on *.* to root@'10.0.0.%';
+Query OK, 0 rows affected (0.00 sec)
+mysql> FLUSH PRIVILEGES;
+Query OK, 0 rows affected (0.00 sec)
+
+```
+
+```sql
+#从节点配置 10.0.0.157
+#创建存储二进制文件文件夹
+[root@10 ~]$ mkdir -pv /data/mysql/logbin
+mkdir: created directory '/data'
+mkdir: created directory '/data/mysql'
+mkdir: created directory '/data/mysql/logbin'
+#授权
+[root@10 ~]$ chown -R mysql.mysql /data/mysql/
+#修改配置文件
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf
+
+[mysqld]
+server-id=157 #指定server-id
+read-only #只读模式
+log-bin=/data/mysql/logbin/mysql-bin #指定二进制文件路径
+#关闭防火墙，临时关闭安全组件，重启系统
+[root@10 ~]$ systemctl stop firewalld.service 
+[root@10 ~]$ setenforce 0;
+#启动服务
+[root@10 ~]$ systemctl restart mysqld.service 
+
+#配置主从同步（易出错，核对值）
+CHANGE MASTER TO MASTER_HOST='10.0.0.171', MASTER_USER='root', MASTER_PASSWORD='123456',MASTER_PORT=3306,MASTER_LOG_FILE='mysql-bin.000002', MASTER_LOG_POS=157;
+#启动同步
+mysql> start slave;
+#master节点创建数据库，表，slave节点查看
+#查看master/slave节点线程
+mysql> show processlist\G
+#------------------------------------------------------------------------------#
+#实验中出现错误
+#1、未关闭安全模块，关闭防火墙
+#2、同步不上主文件修改创建用户的加密方式，在主设备配置文件一定要加
+default_authentication_plugin=mysql_native_password
+#加上之后创建账号，查看账号权限（select user,host,plugin from mysql.user）是不是 mysql_native_password
+#3、防火墙未关，用systemctl disable firewalld.service，没有关掉，重新用的systemctl stop firewalld.service
+```
+
+**现有数据一主一从实现**
+
+![image-20240731201837949](C:/Users/26914/AppData/Roaming/Typora/typora-user-images/image-20240731201837949.png)
+
+```sql
+#主节点10.0.0.157
+#与全新配置一主一从实现的主设备配置相同
+#注意：关闭安全组件 setenforce 0 关闭防火墙 systemctl stop firewalld.service
+#二进制文件仍存储在 /data/mysql/logbin/中，并chown -R mysql.mysql /data/mysql/logbin/ 更改权限
+
+#现有主节点日志
+mysql> show master logs;
+#重置二进制日志
+mysql> reset master
+mysql> show master logs;
+
++------------------+-----------+-----------+
+| Log_name         | File_size | Encrypted |
++------------------+-----------+-----------+
+| mysql-bin.000001 |       157 | No       |
++------------------+-----------+-----------+
+#备份主节点数据
+[root@10 ~]$ mysqldump -A -F --source-data=1 --single-transaction >all.sql
+#日志被刷新
+mysql> show master logs;
++------------------+-----------+-----------+
+| Log_name         | File_size | Encrypted |
++------------------+-----------+--------- 
+| mysql-bin.000001 |       204 | No       |
+| mysql-bin.000002 |       157 | No       |
++------------------+-----------+-----------+
+2 rows in set (0.00 sec)
+
+#创建账号并授权（注意创建完后 select user,host,plugin from mysql.user查看加密方式 ）
+mysql> create user repluser@'10.0.0.%' identified by '123456';
+Query OK, 0 rows affected (0.00 sec)
+mysql> grant replication slave on *.* to repluser@'10.0.0.%';
+Query OK, 0 rows affected (0.01 sec)
+
+#将备份文件复制到10.0.0.153（从设备）
+[root@10 ~]$ scp all.sql 10.0.0.153:
+
+
+#从节点 10.0.0.153
+#修改备份文件
+[root@10 ~]$ vim all.sql
+#找到（可在vim中esc键，然后 :/MASTER_LOG_FILE 搜索MASTER_LOG_FILE）
+CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000004', MASTER_LOG_POS=157; 
+#加上
+CHANGE MASTER TO 
+ MASTER_HOST='10.0.0.157',
+ MASTER_USER='repluser',
+ MASTER_PASSWORD='123456',
+ MASTER_PORT=3306,
+ MASTER_LOG_FILE='mysql-bin.000004', MASTER_LOG_POS=157;
+#启动服务
+[root@10 ~]$ setenforce 0   #关闭安全组件
+[root@10 ~]$ systemctl stop firewalld.service #关闭防火墙
+[root@10 ~]$ systemctl start mysqld.service   #启动服务
+#导入sql文件
+mysql> set sql_log_bin=0;
+mysql> source /root/all.sql
+#查看主从状态
+mysql> show slave status\G
+#启动同步线程
+mysql> start slave;
+#查看主从状态
+mysql> show slave status\G
+#Slave_IO_Running: Yes 
+#Slave_SQL_Running: Yes
+#线程已启动
+#恢复二进制日志
+mysql> set @@sql_log_bin=1;
+#查看从设备数据库内容是否与主文件相同
+#主文件增删改查，查看从设备是否同步
+```
+
+**一主多从实现**
+
+![image-20240731201800031](C:/Users/26914/AppData/Roaming/Typora/typora-user-images/image-20240731201800031.png)
+
+```sql
+#原有主从不变
+#新加一台设备，重新配置从节点（与以前配置从节点相同）
+```
+
+**级联复制实现**![image-20240731170323339](C:/Users/26914/AppData/Roaming/Typora/typora-user-images/image-20240731170323339.png)
+
+
+
+```sql
+#master主节点配置与之前相同
+#slave中间节点配置与之前大部分相同
+#更改slave中间节点配置文件（新加一条 log_slave_updates）
+[mysqld]
+......
+
+server-id=154
+read-only
+log_slave_updates  #将主服务器的更改记录的自己的二进制文件中，供下一级slave使用
+log-bin=/data/mysql/logbin/mysql-bin
+#重启mysql
+#查看中间节点的同步状态，slave的io线程和sql线程运行
+mysql> show slave status\G
+ #Slave_IO_Running: Yes
+ #Slave_SQL_Running: Yes
+#导出中间节点的备份（不用重置二进制文件！！！）
+[root@10 ~]$ mysqldump -A -F --single-transaction --source-data=1 > middleall.sql
+#将middleall.sql文件复制到最后的从设备（10.0.0.174）上
+[root@10 ~]$ scp middle-all.sql 10.0.0.174:
+
+```
+
+```bash
+#最后从节点配置（10.0.0.174）
+#下载mysql，创建二进制日志存放文件夹/data/mysql/logbin，授权chown -R mysql.mysql /data/mysql/
+#删除mysql文件夹内容
+[root@10 ~]$ rm -rf /var/lib/mysql/*
+#更改配置文件
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf 
+[mysqld]
+.......
+
+server-id=174
+read-only
+log-bin=/data/mysql/logbin/mysql-bin
+#修改备份文件
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf
+HANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000004', MASTER_LOG_POS=157;
+#修改为
+CHANGE MASTER TO 
+ MASTER_HOST='10.0.0.153', #中间节点的ip
+ MASTER_USER='repluser',
+ MASTER_PASSWORD='123456',
+ MASTER_PORT=3306,
+ MASTER_LOG_FILE='mysql-bin.000004', 
+ MASTER_LOG_POS=157;
+#启动mysql
+#临时关闭二进制日志
+mysql> set sql_log_bin=0;
+#导入备份数据
+mysql> source /root/middleall.sql
+#开启二进制日志
+mysql> set sql_log_bin=1;
+#启动同步
+mysql> start slave;
+#查看主从状态（两个都为yes就可，否则检测用户状态和防火墙）
+mysql> show slave status\G
+ #Slave_IO_Running: Yes
+ #Slave_SQL_Running: Yes
+#进行同步测试，在主节点增删改查数据库和表，查看中间节点和最后从节点是否同步
+```
+
+主主复制实现（两个设备互为主备）
+
+![image-20240731213247002](C:/Users/26914/AppData/Roaming/Typora/typora-user-images/image-20240731213247002.png)
+
+```sql
+#根据一主一从模型中，10.0.0.157为主10.0.0.153为从
+#只需要把10.0.0.157配置为10.0.0.153的从节点就可
+
+#在原从节点10.0.0.153上
+#更改配置文件
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf 
+[mysqld]
+......
+server-id=154
+log_slave_updates
+log-bin=/data/mysql/logbin/mysql-bin
+
+#重启mysql，查看153的状态
+mysql> show slave status\G
+#Slave_IO_Running: Yes
+#Slave_SQL_Running: Yes
+
+#查看153的二进制日志文件
+mysql> show master status;
++------------------+----------+--------------+------------------
+| File             | Position | Binlog_Do_DB | Binlog_Ignore_DB 
++------------------+----------+--------------+------------------
+| mysql-bin.000005 |      157 |              |                  
++------------------+----------+--------------+------------------
+1 row in set (0.00 sec)
+
+
+
+
+#在原主节点157上配置
+mysql> CHANGE MASTER TO MASTER_HOST='10.0.0.153', MASTER_USER='repluser',
+    -> MASTER_PASSWORD='123456', MASTER_PORT=3306,MASTER_LASTER_LOG_POS=157;
+Query OK, 0 rows affected, 9 warnings (0.08 sec)
+#开始同步
+mysql> start slave;
+#再次查看
+mysql> show slave status\G
+#Slave_IO_Running: Yes
+#Slave_SQL_Running: Yes
+
+#更改原从节点的数据，如果原主节点可以同步，则实验成功
+```
+
+ **半同步复制实现**
+
+```
+CHANGE MASTER TO MASTER_HOST='10.0.0.157', MASTER_USER='repluser', MASTER_PASSWORD='123456',MASTER_PORT=3306,MASTER_LOG_FILE='mysql-bin.000001', MASTER_LOG_POS=157;
 ```
 
