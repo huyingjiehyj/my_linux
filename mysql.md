@@ -1761,7 +1761,178 @@ mysql> show slave status\G
 
  **半同步复制实现**
 
-```
-CHANGE MASTER TO MASTER_HOST='10.0.0.157', MASTER_USER='repluser', MASTER_PASSWORD='123456',MASTER_PORT=3306,MASTER_LOG_FILE='mysql-bin.000001', MASTER_LOG_POS=157;
+```sql
+#master 10.0.0.157  slave1 10.0.0.153   slave2 10.0.0.174
+
+#主节点157 
+#下载mysql后先修改配置文件，加default_authentication_plugin=mysql_native_password，更改创建账号的权限
+
+#安装semisync_master.so插件
+mysql> INSTALL PLUGIN rpl_semi_sync_master SONAME 'semisync_master.so';
+#查看是否安装成功
+mysql> show plugins;
+
+#所谓安装，其实在mysql库中的plugin表中写入一条数据
+mysql> select * from mysql.plugin;
++----------------------+--------------------+
+| name                 | dl                 |
++----------------------+--------------------+
+| rpl_semi_sync_master | semisync_master.so |
++----------------------+--------------------+
+1 row in set (0.00 sec)
+
+#安装完成后还需要手动开启插件
+mysql> select @@rpl_semi_sync_master_enabled;
++--------------------------------+
+| @@rpl_semi_sync_master_enabled |
++--------------------------------+
+|                              0 |
++--------------------------------+
+1 row in set (0.00 sec)
+#查看当前使用的二进制文件
+mysql> show master logs;
++------------------+-----------+-----------+
+| Log_name         | File_size | Encrypted |
++------------------+-----------+-----------+
+| mysql-bin.000001 |       157 | No        |
++------------------+-----------+-----------+
+1 row in set (0.00 sec)
+#创建主从复制账号，并授权(创建账号之前应在配置文件写入)
+mysql> create user repluser@'10.0.0.%' identified by '123456';
+Query OK, 0 rows affected (0.02 sec)
+mysql> grant replication slave on *.* to repluser@'10.0.0.%';
+Query OK, 0 rows affected (0.00 sec)
+#修改配置文件
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf 
+[mysqld]
+server-id=157
+rpl_semi_sync_master_enabled        #rpl_semi_sync_master_enabled=1，打开
+log-bin=/data/mysql/logbin/mysql-bin #需要提前创建好文件夹并授权
+default_authentication_plugin=mysql_native_password
+#重启服务
+[root@10 ~]$  setenforce 0  #关闭安全组件
+[root@10 ~]$ systemctl stop firewalld.service #关闭防火墙
+[root@10 ~]$ systemctl restart mysqld  
+
+#再次查看
+mysql> select @@rpl_semi_sync_master_enabled;
++--------------------------------+
+| @@rpl_semi_sync_master_enabled |
++--------------------------------+
+|                              1 |
++--------------------------------+
+1 row in set (0.00 sec)
+
+
 ```
 
+```sql
+从节点153、174配置
+
+#下载slave插件
+mysql> INSTALL PLUGIN rpl_semi_sync_slave SONAME 'semisync_slave.so';
+#查看是否安装
+mysql> show plugins;
+#查看插件是否开启（0是未开）
+mysql> select @@rpl_semi_sync_slave_enabled;
+#修改mysql配置文件
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf
+[mysqld]
+server-id=153 #两个从节点不能相同
+read-only   #只读
+rpl_semi_sync_slave_enabled #打开从节点的插件
+log-bin=/data/mysql/logbin/mysql-bin #需要创建二进制日志的文件夹并授权
+
+#重启服务（关闭安全组件，防火墙）
+[root@10 ~]$ systemctl restart mysqld.service
+
+#在slave上开启主从
+CHANGE MASTER TO MASTER_HOST='10.0.0.157', MASTER_USER='repluser', MASTER_PASSWORD='123456',MASTER_PORT=3306,MASTER_LOG_FILE='binlog.000001', MASTER_LOG_POS=157;
+#开启同步
+mysql> start slave;
+Query OK, 0 rows affected, 1 warning (0.01 sec)
+
+#查看状态
+mysql> show slave status\G
+#Slave_IO_Running: Yes
+#Slave_SQL_Running: Yes
+
+```
+
+```sql
+mysql> show global variables like '%semi%';
++-------------------------------------------+------------+
+| Variable_name                             | Value      |
++-------------------------------------------+------------+
+| rpl_semi_sync_master_enabled              | ON         |#己开启
+| rpl_semi_sync_master_timeout              | 10000      |#超时时长,1W毫秒，10S
+| rpl_semi_sync_master_trace_level          | 32         |#指定几台slave节点收到binlog后就给客户端返回
+| rpl_semi_sync_master_wait_for_slave_count | 1          |
+| rpl_semi_sync_master_wait_no_slave        | ON         |
+| rpl_semi_sync_master_wait_point           | AFTER_SYNC |#当前同步策略
++-------------------------------------------+------------+
+
+mysql> show global status like '%semi%';
++--------------------------------------------+-------+
+| Variable_name                              | Value |
++--------------------------------------------+-------+
+| Rpl_semi_sync_master_clients               | 2     |#2个slave节点
+| Rpl_semi_sync_master_net_avg_wait_time     | 0     |
+| Rpl_semi_sync_master_net_wait_time         | 0     |
+| Rpl_semi_sync_master_net_waits             | 0     |
+| Rpl_semi_sync_master_no_times              | 0     |
+| Rpl_semi_sync_master_no_tx                 | 0     |
+| Rpl_semi_sync_master_status                | ON    |
+| ......
+
+#主节点创建数据库，表后，自动同步到从数据库，
+#半同步状态下，只要有一个slave节点能同步到数据，master 节点就能返回成功。
+#两个slave都关闭的情况下 再次执行写操作，等10S后超时，但master节点上写入成功
+```
+
+**复制过滤器**
+
+- 只需要在 master 节点上配置一次即可，不需要在 salve 节点上操作；减小了二进制日志中的数 据量，能减少磁盘IO和网络IO。
+- 复制过滤可能会出现跨库时同步失败的问题，设置过滤规则一定要考虑业务，**防止连表**，跨库操作失 败，要把业务覆盖全
+
+```sql
+#master 节点上配置db1,db2 不写二进制日志
+
+[root@rocky8 ~]# vim /etc/my.cnf
+......
+[mysqld]
+server-id=177
+rpl_semi_sync_master_enabled
+rpl_semi_sync_master_timeout=3000
+log-bin=/data/mysql/logbin/mysql-bin
+binlog-ignore-db=db1
+binlog-ignore-db=db2
+
+#保存重启后，主节点创建db1，db2，db3数据库并不会同步到从节点
+#主节点去掉过滤，删除db1，db2，db3
+
+#slave节点上配置
+[root@rocky8 ~]# vim /etc/my.cnf 
+....
+replicate-do-db=db1
+replicate-do-db=db2
+replicate-wild-do-table=db%.stu #指定哪些表应该被复制
+
+#重启服务
+#重置主从同步
+mysql> CHANGE MASTER TO
+    ->  MASTER_HOST='10.0.0.157',
+    ->  MASTER_USER='repluser',
+    ->  MASTER_PASSWORD='123456',
+    ->  MASTER_PORT=3306,
+    ->  MASTER_LOG_FILE='mysql-bin.000008', MASTER_LOG_POS=157;
+Query OK, 0 rows affected, 9 warnings (0.03 sec)
+mysql> start slave;
+Query OK, 0 rows affected, 1 warning (0.03 sec)
+
+#主节点创建db1，db2，testdb只同步了db1，db2
+#主节点db1，db2，创建tab1，tab2，stu表只同步stu表
+
+```
+
+ **GTID 复制**
