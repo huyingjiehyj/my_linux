@@ -1475,9 +1475,9 @@ done
 
 - 纵向扩展：一般采用升级服 务器硬件，增加资源供给，修改服务配置项等方式来解决性能问题，
 
-  **全新一主一从实现（修改配置文件容易报错）**
+  ###### 1、全新一主一从实现（修改配置文件容易报错）
   
-  ![image-20240731201828254](C:/Users/26914/AppData/Roaming/Typora/typora-user-images/image-20240731201828254.png)
+  ****![image-20240731201828254](C:/Users/26914/AppData/Roaming/Typora/typora-user-images/image-20240731201828254.png)
 
 ```sql
 #主节点配置   10.0.0.171
@@ -1499,16 +1499,24 @@ pid-file=/run/mysqld/mysqld.pid
 #指定server-id和存放二进制文件的路径
 server-id=171
 log_bin=/data/mysql/logbin/mysql-bin
-default_authentication_plugin=mysql_native_password
+#创建账号默认权限为mysql_native_password 
+default_authentication_plugin=mysql_native_password 
 
 #重启服务
 #重启服务失败时可先输入命令setenforce 0
-#关闭防火墙 (关完systemctl status firewall.service确认一下)
+#关闭防火墙 (关完systemctl status firewalld.service确认一下)
 #重连mysql
 #(如果还不行)然后更改文件/etc/selinux/config中将SELINUX的值从enforcing或permissive更改为disabled，然后重启系统。
 [root@10 ~]$ systemctl restart mysqld
-#查看二进制日志
- ll /data/mysql/logbin/ #或 mysql> show master logs;
+#查看二进制日志ll /data/mysql/logbin/ #或 mysql> show master logs;
+ mysql>  show master logs;
++------------------+-----------+-----------+
+| Log_name         | File_size | Encrypted |
++------------------+-----------+-----------+
+| mysql-bin.000001 |       180 | No        |
+| mysql-bin.000002 |       157 | No        |
++------------------+-----------+-----------+
+
 #创建账号，给账号授权（账号权限mysql_native_password）
 #查看账号权限（select user,host,plugin from mysql.user）
 mysql> create user root@'10.0.0.%' identified by '123456';
@@ -1936,3 +1944,96 @@ Query OK, 0 rows affected, 1 warning (0.03 sec)
 ```
 
  **GTID 复制**
+
+- GTID 复制不像传统的复制方式（异步复制、半同步复制）需要找到 binlog 文件名和 POS 点，只 需知道 master 节点的 IP、端口、账号、密码即可
+
+- 开启 GTID 后，执行 change master to  master_auto_postion=1 即可，它会自动寻找到相应的位置开始同步。
+
+- 优点：
+
+  便于主从复制的搭建
+
+  GTID 可以知道事务在最开始是在哪个实例上提交的，保证事务全局统一
+
+  截取日志更加方便。跨多文件，判断起点终点更加方便 
+
+  传输日志，可以并发传输。SQL 回放可以更高并发 
+
+  判断主从工作状态更加方便
+
+```sql
+#首先创建好主从（主10.0.0.157，从10.0.0.153）
+
+#从节点上还原状态
+mysql> stop slave;
+mysql> reset slave all;
+#删除数据库（系统自带的不删）
+mysql> drop database ......;
+#修改配置
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf
+server-id=153
+read-only
+log-bin=/data/mysql/logbin/mysql-bin
+gtid_mode=ON
+enforce_gtid_consistency=ON
+#重启服务
+```
+
+```sql
+#主节点
+#删除数据库
+#修改配置
+[root@10 ~]$ vim /etc/my.cnf.d/mysql-server.cnf
+.......
+server-id=157
+log_bin=/data/mysql/logbin/mysql-bin
+default_authentication_plugin=mysql_native_password
+gtid_mode=ON
+enforce_gtid_consistency=ON
+#重启服务
+
+```
+
+```sql
+#从节点设置主从同步
+mysql> CHANGE MASTER TO
+    ->  MASTER_HOST='10.0.0.157',
+    ->  MASTER_USER='repluser',
+    ->  MASTER_PASSWORD='123456',
+    ->  MASTER_PORT=3306,
+    ->  MASTER_AUTO_POSITION=1;
+Query OK, 0 rows affected, 8 warnings (0.03 sec)
+mysql> start slave;
+#在主节点写入数据库表格，从节点测试
+```
+
+
+
+
+
+- **数据不一致如何修复**
+
+重置主从关系，从新复制
+
+- **主从复制出现延迟**
+
+- 升级到 MySQL5.7 以上版本(5.7之前的版本，没有开 GTID 之前，主库可以并发事务，但是 dump 传输时是串行)利用 GTID( MySQL5.6需要手动开启，MySQL5.7 以上默认开启)支持并发传输  
+- binlog 及并行多个 SQL 线程。 
+- 减少大事务，将大事务拆分成小事务 
+- 减少锁
+- sync_binlog=1 加快 binlog 更新时间，从而加快日志复制 
+- 需要额外的监控工具的辅助 
+- 多线程复制：对多个数据库复制 
+- 一从多主：Mariadb10 版后支持
+
+**如何避免主从不一致**
+
+主库 binlog 采用 ROW 格式 
+
+主从实例数据库版本保持一致 
+
+主库做好账号权限把控，不可以执行 set sql_log_bin=0
+
+从库开启只读，不允许人为写入 
+
+定期进行主从一致性检验
