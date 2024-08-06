@@ -450,3 +450,138 @@ vrrp_instance www.m99-magedu.com {
 }
 ```
 
+###### keepalived实现lvs高可用
+
+```bash
+#后台RS-1/RS-2配置
+#nginx环境
+[root@ubuntu2 ~]$ vim /var/www/html/index.html 
+RS-1 nginx #RS-2 nginx
+[root@ubuntu2 ~]$ vim /var/www/html/ping.html 
+pong
+#重启nginx环境
+[root@ubuntu2 ~]$ systemctl restart nginx.service 
+#配置VIP地址 并禁止VIP的ARP请求和响应
+[root@ubuntu2 ~]$ ip a a 10.0.0.123/32 dev lo
+[root@ubuntu2 ~]$ echo 1 > /proc/sys/net/ipv4/conf/all/arp_ignore
+[root@ubuntu2 ~]$ echo 1 > /proc/sys/net/ipv4/conf/lo/arp_ignore
+[root@ubuntu2 ~]$ echo 1 > /proc/sys/net/ipv4/conf/all/arp_announce
+[root@ubuntu2 ~]$ echo 1 > /proc/sys/net/ipv4/conf/lo/arp_announce
+#查看
+[root@ubuntu2 ~]$  ip a 
+
+```
+
+```bash
+#10.0.0.216/10.0.0.217  keeplive节点设置
+[root@ubuntu22 ~]$ cat /etc/keepalived/keepalived.conf
+global_defs {
+  router_id k216
+  vrrp_mcast_group4 226.6.6.6
+}
+include /etc/keepalived/conf.d/*.conf #引用路径下conf.d中的配置文件
+
+
+#写配置文件和ipvsadm规则
+[root@ubuntu22 ~]$ cat /etc/keepalived/conf.d/www.m99-magedu.com.conf 
+vrrp_instance www.m99-magedu.com{
+  state MASTER                         #10.0.0.217 是BACKUP
+  interface eth1
+  virtual_router_id 66
+  priority 100                         #优先级10.0.0.217是80
+  advert_int 1
+  unicast_src_ip 192.168.10.8
+  unicast_peer{
+    192.168.10.18
+  }
+  authentication{
+      auth_type PASS
+      auth_pass 123456
+  }
+  virtual_ipaddress {
+      10.0.0.123/24 dev eth0
+  }
+}
+
+virtual_server 10.0.0.123 80{
+  delay_loop 3 #3s检查一次后端服务器
+  lb_algo rr    #轮询算法
+  lb_kind DR    #DR模型不支持端口映射
+  protocol TCP   #TCP协议
+  
+  real_server 10.0.0.218 80 {  #RS-1
+     weight 1   #权重
+     HTTP_GET { #后端主机检测
+       url {
+             path /ping.html
+             status_code 200
+       }
+       connect_timeout 1  #超时时长
+       retry 3            #重试次数
+       delay_before_retry 1  #重试前等待时长
+     }
+
+  }
+  real_server 10.0.0.219 80 { #RS-2
+       weight 1
+       HTTP_GET {
+          url {
+             path /ping.html
+             status_code 200
+          }
+           connect_timeout 1
+           retry 3
+           delay_before_retry 1
+       }
+  }
+
+}
+#重启服务
+[root@ubuntu22 ~]$ systemctl restart keepalived.service 
+#查看ipvsadm
+root@ubuntu22 ~]$ ipvsadm -Ln
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port           Forward Weight ActiveConn InActConn
+TCP  10.0.0.123:80 rr
+  -> 10.0.0.162:80                Route   1      0          0         
+  -> 10.0.0.181:80                Route   1      0          0 
+  
+```
+
+```bash
+#RS主机上查看健康检查请求
+[root@ubuntu2 ~]$ tail /var/log/nginx/access.log 
+10.0.0.216 - - [06/Aug/2024:12:10:49 +0000] "GET /ping.html HTTP/1.0" 200 5 "-" "KeepAliveClient"
+10.0.0.217 - - [06/Aug/2024:12:10:50 +0000] "GET /ping.html HTTP/1.0" 200 5 "-" "KeepAliveClient"
+10.0.0.216 - - [06/Aug/2024:12:10:52 +0000] "GET /ping.html HTTP/1.0" 200 5 "-" "KeepAliveClient"
+10.0.0.217 - - [06/Aug/2024:12:10:53 +0000] "GET /ping.html HTTP/1.0" 200 5 "-" "KeepAliveClient"
+10.0.0.216 - - [06/Aug/2024:12:10:55 +0000] "GET /ping.html HTTP/1.0" 200 5 "-" "KeepAliveClient"
+10.0.0.217 - - [06/Aug/2024:12:10:56 +0000] "GET /ping.html HTTP/1.0" 200 5 "-" "KeepAliveClient"
+
+
+
+#客户端测试
+[root@10 ~]$ cat /etc/hosts
+10.0.0.123 www.m99-magedu.com
+#curl www.m99-magedu.com
+```
+
+###### 双主模型实现
+
+```bash
+#RS-1/RS-2 节点不变，只需要将 master改为BACKUP，主节点比备用节点优先级高
+[root@ubuntu22 ~]$ cat /etc/keepalived/conf.d/www.m99-magedu.com.conf 
+vrrp_instance www.m99-magedu.com{
+  state BACKUP                       
+  interface eth1
+  virtual_router_id 66
+  priority 100                         #优先级10.0.0.217是80
+  advert_int 1
+  unicast_src_ip 192.168.10.8
+  unicast_peer{
+    192.168.10.18
+  }
+```
+
+**实现HTTPS调度**（nginx证书）
